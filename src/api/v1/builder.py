@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
-from src.agent.graph import resume_builder, run_builder
+from src.agent.graph import resume_builder, run_builder, run_builder_existing
 from src.core.config import settings
 from src.models.refinement import RefinementContext
 from src.models.request import BuildRequest, BuildResponse
@@ -77,6 +77,60 @@ async def build_project(
     Usa POST /build/resume con decision="approve" para generar el código.
     """
     result = await run_builder(body, _client, thread_id=body.thread_id)
+
+    if result.interrupted:
+        return BuildV2Response(
+            thread_id=result.thread_id,
+            interrupted=True,
+            blueprint_request=result.interrupt_payload,
+        )
+
+    return BuildV2Response(
+        thread_id=result.thread_id,
+        interrupted=False,
+        result=result.response,
+    )
+
+
+class ModifyRequest(BaseModel):
+    """Modo B — modifica un proyecto existente en disco."""
+    user_story: str
+    project_path: str             # ruta absoluta o con ~ al repo en tu Mac
+    branch_name: str              # rama a crear desde main (ej: feature/HU-142)
+    refinement_context: Optional[RefinementContext] = None
+    thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@router.post("/modify")
+async def modify_existing_project(
+    body: ModifyRequest,
+    _: str = Depends(_verify_api_key),
+) -> BuildV2Response:
+    """
+    Modo B — modifica un proyecto existente en tu Mac.
+
+    El agente:
+      1. Lee la estructura del proyecto en project_path
+      2. Propone un blueprint de los cambios necesarios (pausa para aprobacion)
+      3. Crea la rama branch_name desde main
+      4. Modifica los archivos necesarios siguiendo los patrones del proyecto
+      5. Hace commit y push a Azure DevOps
+      6. Abre VS Code
+
+    Usa POST /build/resume para aprobar el blueprint o dar feedback.
+    """
+    request = BuildRequest(
+        user_story=body.user_story,
+        branch_name=body.branch_name,
+        refinement_context=body.refinement_context,
+    )
+    result = await run_builder_existing(
+        request=request,
+        project_path=body.project_path,
+        branch_name=body.branch_name,
+        client=_client,
+        thread_id=body.thread_id,
+    )
 
     if result.interrupted:
         return BuildV2Response(

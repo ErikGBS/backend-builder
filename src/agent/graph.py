@@ -12,6 +12,7 @@ from src.agent.nodes import (
     node_call_model,
     node_execute_tools,
     node_prepare_decision,
+    node_read_project,
     node_setup,
 )
 from src.agent.state import BuilderState
@@ -61,13 +62,18 @@ def build_graph(client):
 
     graph = StateGraph(BuilderState)
 
+    graph.add_node("read_project",        node_read_project)   # Modo B — lee proyecto existente
     graph.add_node("call_model",          partial(node_call_model, client=client))
     graph.add_node("execute_tools",       node_execute_tools)
     graph.add_node("blueprint_approval",  node_blueprint_approval)
     graph.add_node("prepare_decision",    node_prepare_decision)
     graph.add_node("setup",               node_setup)
 
-    graph.set_entry_point("call_model")
+    # Entry point: Modo B va a read_project primero, Modo A va directo a call_model
+    graph.set_conditional_entry_point(
+        lambda s: "read_project" if s.get("mode") == "existing" else "call_model"
+    )
+    graph.add_edge("read_project", "call_model")
 
     graph.add_conditional_edges(
         "call_model", _after_model,
@@ -124,6 +130,10 @@ async def run_builder(
             request.user_story, request.refinement_context
         )}],
         "request": request,
+        "mode": "new",
+        "project_path": "",
+        "branch_name": request.branch_name or "",
+        "existing_structure": "",
         "project_name": request.project_name or "",
         "framework": "",
         "database": "",
@@ -132,6 +142,7 @@ async def run_builder(
         "blueprint": None,
         "blueprint_approved": False,
         "files_generated": [],
+        "files_modified": [],
         "generation_round": 0,
         "generation_complete": False,
         "_stop_reason": "",
@@ -173,6 +184,74 @@ async def run_builder(
             database=blueprint.database if blueprint else "",
             branch_name=request.branch_name,
             message=f"Proyecto generado con {len(files)} archivos. VS Code abierto.",
+        ),
+    )
+
+
+async def run_builder_existing(
+    request: BuildRequest,
+    project_path: str,
+    branch_name: str,
+    client,
+    thread_id: str,
+) -> GraphRunResult:
+    """Modo B — modifica un proyecto existente en disco."""
+    graph = build_graph(client)
+    config = _make_config(thread_id)
+
+    initial_state: BuilderState = {
+        "messages": [{"role": "user", "content": build_initial_content(
+            request.user_story, request.refinement_context
+        )}],
+        "request": request,
+        "mode": "existing",
+        "project_path": str(Path(project_path).expanduser()),
+        "branch_name": branch_name,
+        "existing_structure": "",
+        "project_name": Path(project_path).name,
+        "framework": "",
+        "database": "",
+        "auth": "",
+        "extra_context": "",
+        "blueprint": None,
+        "blueprint_approved": False,
+        "files_generated": [],
+        "files_modified": [],
+        "generation_round": 0,
+        "generation_complete": False,
+        "_stop_reason": "",
+        "human_decision": None,
+    }
+
+    final = await graph.ainvoke(initial_state, config)
+
+    snapshot = await graph.aget_state(config)
+    interrupted = bool(snapshot and snapshot.next)
+    interrupt_payload = None
+    if interrupted and snapshot.tasks:
+        for task in snapshot.tasks:
+            if hasattr(task, "interrupts") and task.interrupts:
+                interrupt_payload = task.interrupts[0].value
+                break
+
+    if interrupted:
+        return GraphRunResult(
+            thread_id=thread_id, interrupted=True,
+            interrupt_payload=interrupt_payload, response=None,
+        )
+
+    files = final.get("files_generated", []) if isinstance(final, dict) else []
+    blueprint = final.get("blueprint") if isinstance(final, dict) else None
+
+    return GraphRunResult(
+        thread_id=thread_id, interrupted=False, interrupt_payload=None,
+        response=BuildResponse(
+            project_path=project_path,
+            files_generated=files,
+            framework=blueprint.framework if blueprint else "",
+            database=blueprint.database if blueprint else "",
+            branch_name=branch_name,
+            message=f"Modificacion completada. {len(files)} archivos. Branch: {branch_name}",
         ),
     )
 

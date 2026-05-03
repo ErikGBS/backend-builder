@@ -2,15 +2,51 @@ import logging
 
 from langgraph.types import interrupt
 
+from pathlib import Path
+
 from src.agent.parsers import extract_blueprint, serialize_content
 from src.agent.prompt import SYSTEM_PROMPT
 from src.agent.state import BuilderState
-from src.agent.tools import TOOLS, execute_tool
+from src.agent.tools import TOOLS, execute_tool, execute_tool_at
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+
+
+async def node_read_project(state: BuilderState) -> dict:
+    """Modo B: lee la estructura del proyecto existente e inyecta el contexto en los mensajes."""
+    project_path = Path(state.get("project_path", "")).expanduser()
+    if not project_path.exists():
+        logger.warning("node_read_project path not found: %s", project_path)
+        return {"existing_structure": f"Ruta no encontrada: {project_path}"}
+
+    # Lee la estructura de carpetas
+    structure = await execute_tool_at("list_files", {"depth": 4}, project_path)
+
+    # Lee archivos clave para entender los patrones del proyecto
+    key_patterns = []
+    for pattern in ["**/main.py", "**/app.py", "**/config.py", "requirements.txt", "pyproject.toml"]:
+        for f in list(project_path.glob(pattern))[:2]:
+            rel = str(f.relative_to(project_path))
+            content = await execute_tool_at("read_file", {"path": rel}, project_path)
+            key_patterns.append(content)
+
+    context_msg = (
+        f"MODO B — Proyecto existente detectado en: {project_path}\n\n"
+        f"## Estructura del proyecto\n{structure}\n\n"
+        f"## Archivos clave\n" + "\n".join(key_patterns[:3]) +
+        f"\n\n## Instruccion\nAnaliza la estructura y patrones existentes. "
+        f"Luego propone el blueprint de los cambios a realizar (propose_blueprint). "
+        f"Recuerda crear la rama con git_create_branch antes de modificar archivos."
+    )
+
+    logger.info("node_read_project path=%s", project_path)
+    return {
+        "existing_structure": structure,
+        "messages": state["messages"] + [{"role": "user", "content": [{"type": "text", "text": context_msg}]}],
+    }
 
 
 async def node_call_model(state: BuilderState, client) -> dict:
@@ -47,6 +83,10 @@ async def node_execute_tools(state: BuilderState) -> dict:
 
         generation_done = state.get("generation_complete", False)
 
+        mode = state.get("mode", "new")
+        is_existing = mode == "existing"
+        existing_path = Path(state.get("project_path", "")).expanduser() if is_existing else None
+
         if name == "propose_blueprint":
             blueprint = extract_blueprint(inputs)
             result = (
@@ -56,6 +96,10 @@ async def node_execute_tools(state: BuilderState) -> dict:
         elif name == "generation_complete":
             generation_done = True
             result = f"Generación completada. Archivos: {len(files_generated)}. Resumen: {inputs.get('summary', '')}"
+        elif is_existing and existing_path:
+            result = await execute_tool_at(name, inputs, existing_path)
+            if name == "write_file":
+                files_generated.append(inputs.get("path", ""))
         else:
             result = await execute_tool(name, inputs, state["request"].project_name or "proyecto")
             if name == "write_file":

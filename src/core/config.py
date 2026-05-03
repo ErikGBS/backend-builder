@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     api_key: str
     projects_workspace: str = "~/projects"
 
+    # Azure DevOps — necesario para git push en repos existentes
+    azure_devops_pat: Optional[str] = None
+    azure_devops_org: Optional[str] = None
+
     langsmith_tracing: bool = False
     langsmith_api_key: Optional[str] = None
     langsmith_project: str = "backend-builder"
