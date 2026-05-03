@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.graph import resume_builder, run_builder
 from src.core.config import settings
+from src.models.refinement import RefinementContext
 from src.models.request import BuildRequest, BuildResponse
 
 router = APIRouter(prefix="/builder", tags=["builder"])
@@ -45,6 +46,19 @@ class BuildV2Response(BaseModel):
     result: Optional[BuildResponse] = None
 
 
+class BuildFromRefinementRequest(BaseModel):
+    """Construye un proyecto usando el output del agente de refinamiento como contexto.
+
+    El agente de refinamiento ya analizó el codebase. El builder usa ese contexto
+    para generar código que sigue los patrones del proyecto existente.
+    """
+    user_story: str
+    project_name: Optional[str] = None
+    branch_name: Optional[str] = None
+    refinement_context: RefinementContext
+    thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+
 class ResumeRequest(BaseModel):
     thread_id: str
     decision: str
@@ -63,6 +77,47 @@ async def build_project(
     Usa POST /build/resume con decision="approve" para generar el código.
     """
     result = await run_builder(body, _client, thread_id=body.thread_id)
+
+    if result.interrupted:
+        return BuildV2Response(
+            thread_id=result.thread_id,
+            interrupted=True,
+            blueprint_request=result.interrupt_payload,
+        )
+
+    return BuildV2Response(
+        thread_id=result.thread_id,
+        interrupted=False,
+        result=result.response,
+    )
+
+
+@router.post("/build-from-refinement")
+async def build_from_refinement(
+    body: BuildFromRefinementRequest,
+    _: str = Depends(_verify_api_key),
+) -> BuildV2Response:
+    """
+    Construye un proyecto usando el análisis del agente de refinamiento como contexto.
+
+    Pipeline completo:
+      1. El agente de refinamiento (backend-agent) analiza el codebase existente
+      2. Su output (RefinementAnalysis JSON) se pasa aquí como refinement_context
+      3. El builder genera código que sigue los patrones del proyecto real
+
+    El agente sabrá:
+      - Qué repos están impactados y cómo
+      - Qué endpoints ya existen (no los duplica)
+      - Qué schemas afectar
+      - Qué cambios de BD son necesarios
+    """
+    request = BuildRequest(
+        user_story=body.user_story,
+        project_name=body.project_name,
+        branch_name=body.branch_name,
+        refinement_context=body.refinement_context,
+    )
+    result = await run_builder(request, _client, thread_id=body.thread_id)
 
     if result.interrupted:
         return BuildV2Response(

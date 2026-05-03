@@ -120,7 +120,9 @@ async def run_builder(
     config = _make_config(thread_id)
 
     initial_state: BuilderState = {
-        "messages": [{"role": "user", "content": build_initial_content(request.user_story)}],
+        "messages": [{"role": "user", "content": build_initial_content(
+            request.user_story, request.refinement_context
+        )}],
         "request": request,
         "project_name": request.project_name or "",
         "framework": "",
