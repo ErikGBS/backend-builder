@@ -25,6 +25,7 @@ class BuilderState(TypedDict):
     # Generation tracking
     files_generated: list[str]
     generation_round: int
+    generation_complete: bool   # True only after Claude calls generation_complete tool
 
     # Flow control
     _stop_reason: str

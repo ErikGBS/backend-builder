@@ -92,6 +92,29 @@ TOOLS = [
         },
     },
     {
+        "name": "generation_complete",
+        "description": (
+            "Señala que todos los archivos del proyecto han sido generados. "
+            "Llama esta tool SOLO cuando hayas escrito TODOS los archivos: "
+            "modelos, servicios, routes, Swagger, requirements/package.json, .env.example y README. "
+            "Después de esta tool, el sistema hará git init y abrirá VS Code."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Resumen de lo que se generó y cómo levantar el proyecto",
+                },
+                "run_command": {
+                    "type": "string",
+                    "description": "Comando para levantar el servidor (ej: uvicorn main:app --reload)",
+                },
+            },
+            "required": ["summary", "run_command"],
+        },
+    },
+    {
         "name": "open_vscode",
         "description": "Abre el proyecto en Visual Studio Code al finalizar la generación.",
         "input_schema": {

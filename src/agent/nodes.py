@@ -45,13 +45,17 @@ async def node_execute_tools(state: BuilderState) -> dict:
         inputs = block["input"]
         logger.info("node_execute_tools tool=%s", name)
 
+        generation_done = state.get("generation_complete", False)
+
         if name == "propose_blueprint":
-            # Extract blueprint and store in state — don't count as file
             blueprint = extract_blueprint(inputs)
             result = (
                 f"Blueprint registrado: {blueprint.project_name if blueprint else 'inválido'}. "
                 "Esperando aprobación del developer."
             )
+        elif name == "generation_complete":
+            generation_done = True
+            result = f"Generación completada. Archivos: {len(files_generated)}. Resumen: {inputs.get('summary', '')}"
         else:
             result = await execute_tool(name, inputs, state["request"].project_name or "proyecto")
             if name == "write_file":
@@ -63,6 +67,7 @@ async def node_execute_tools(state: BuilderState) -> dict:
         "messages": state["messages"] + [{"role": "user", "content": tool_results}],
         "blueprint": blueprint,
         "files_generated": files_generated,
+        "generation_complete": generation_done,
     }
 
 

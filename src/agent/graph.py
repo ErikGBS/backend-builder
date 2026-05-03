@@ -28,18 +28,15 @@ def _after_model(state: BuilderState) -> str:
     stop_reason = state.get("_stop_reason", "")
     if stop_reason == "tool_use":
         return "execute_tools"
-    # end_turn — check if blueprint was proposed but not yet approved
-    if state.get("blueprint") and not state.get("blueprint_approved"):
-        return "blueprint_approval"
-    # end_turn — blueprint approved, check if generation is done
-    if state.get("blueprint_approved"):
-        return "setup"
-    # end_turn — still in discovery, keep conversing
-    return "call_model"
+    # end_turn — Claude is done with current turn, check state
+    return "call_model"  # stay in conversation loop (graph exits via execute_tools routing)
 
 
 def _after_execute_tools(state: BuilderState) -> str:
-    # If propose_blueprint was just called → go to approval
+    # generation_complete tool was called → go to setup
+    if state.get("generation_complete"):
+        return "setup"
+    # propose_blueprint was called → go to approval
     if state.get("blueprint") and not state.get("blueprint_approved"):
         return "blueprint_approval"
     return "call_model"
@@ -133,6 +130,7 @@ async def run_builder(
         "blueprint_approved": False,
         "files_generated": [],
         "generation_round": 0,
+        "generation_complete": False,
         "_stop_reason": "",
         "human_decision": None,
     }
