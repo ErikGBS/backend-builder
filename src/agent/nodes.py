@@ -15,36 +15,92 @@ logger = logging.getLogger(__name__)
 _SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
 
-async def node_read_project(state: BuilderState) -> dict:
-    """Modo B: lee la estructura del proyecto existente e inyecta el contexto en los mensajes."""
-    project_path = Path(state.get("project_path", "")).expanduser()
-    if not project_path.exists():
-        logger.warning("node_read_project path not found: %s", project_path)
-        return {"existing_structure": f"Ruta no encontrada: {project_path}"}
+async def _read_one_repo(repo_name: str, repo_info: dict) -> str:
+    """Lee estructura y archivos clave de un repo y devuelve el contexto como string."""
+    path = Path(repo_info["path"]).expanduser()
+    repo_type = repo_info.get("repo_type", "python")
+    branch = repo_info.get("branch_name", "feature/cambios")
 
-    # Lee la estructura de carpetas
-    structure = await execute_tool_at("list_files", {"depth": 4}, project_path)
+    if not path.exists():
+        return f"### {repo_name}\nRuta no encontrada: {path}\n"
 
-    # Lee archivos clave para entender los patrones del proyecto
-    key_patterns = []
-    for pattern in ["**/main.py", "**/app.py", "**/config.py", "requirements.txt", "pyproject.toml"]:
-        for f in list(project_path.glob(pattern))[:2]:
-            rel = str(f.relative_to(project_path))
-            content = await execute_tool_at("read_file", {"path": rel}, project_path)
-            key_patterns.append(content)
+    structure = await execute_tool_at("list_files", {"depth": 3}, path)
 
-    context_msg = (
-        f"MODO B — Proyecto existente detectado en: {project_path}\n\n"
-        f"## Estructura del proyecto\n{structure}\n\n"
-        f"## Archivos clave\n" + "\n".join(key_patterns[:3]) +
-        f"\n\n## Instruccion\nAnaliza la estructura y patrones existentes. "
-        f"Luego propone el blueprint de los cambios a realizar (propose_blueprint). "
-        f"Recuerda crear la rama con git_create_branch antes de modificar archivos."
+    # Archivos clave según tipo de repo
+    key_files = {
+        "python":            ["requirements.txt", "pyproject.toml", "main.py", "app.py"],
+        "dotnet":            ["*.csproj", "Program.cs", "Startup.cs"],
+        "functions-python":  ["requirements.txt", "host.json", "local.settings.json"],
+        "functions-dotnet":  ["host.json", "local.settings.json", "*.csproj"],
+    }.get(repo_type, ["requirements.txt", "main.py"])
+
+    snippets = []
+    for pattern in key_files:
+        for f in list(path.glob(f"**/{pattern}"))[:1]:
+            rel = str(f.relative_to(path))
+            content = await execute_tool_at("read_file", {"path": rel}, path)
+            snippets.append(content)
+            if len(snippets) >= 2:
+                break
+
+    return (
+        f"### Repo: {repo_name} ({repo_type})\n"
+        f"Ruta: {path} | Rama a crear: {branch}\n\n"
+        f"**Estructura:**\n{structure}\n\n"
+        f"**Archivos clave:**\n" + "\n".join(snippets[:2])
     )
 
-    logger.info("node_read_project path=%s", project_path)
+
+async def node_read_project(state: BuilderState) -> dict:
+    """Lee la estructura de proyectos existentes e inyecta el contexto en los mensajes.
+    Soporta modo single (mode=existing) y multi-repo (mode=multi).
+    """
+    mode = state.get("mode", "existing")
+    contexts = []
+
+    if mode == "multi":
+        registry = state.get("repos_registry", {})
+        logger.info("node_read_project multi-repo repos=%s", list(registry.keys()))
+        for repo_name, repo_info in registry.items():
+            ctx = await _read_one_repo(repo_name, repo_info)
+            contexts.append(ctx)
+        intro = (
+            f"MODO MULTI-REPO — Debes modificar {len(registry)} repositorios para esta historia.\n\n"
+            "Para cada repo: usa set_active_repo(repo_name) antes de operar sobre sus archivos.\n"
+            "Orden recomendado: git_pull → git_create_branch → modificar archivos → git_push.\n\n"
+        )
+    else:
+        project_path = Path(state.get("project_path", "")).expanduser()
+        repo_info = {"path": str(project_path), "repo_type": "python",
+                     "branch_name": state.get("branch_name", "")}
+        ctx = await _read_one_repo(project_path.name, repo_info)
+        contexts.append(ctx)
+        intro = "MODO B — Proyecto existente.\n\n"
+
+    azure_functions_note = ""
+    registry = state.get("repos_registry", {})
+    has_functions = any("function" in v.get("repo_type", "") for v in registry.values())
+    if has_functions:
+        azure_functions_note = (
+            "\n\n**NOTA AZURE FUNCTIONS:**\n"
+            "- Estructura: una carpeta por funcion con function.json\n"
+            "- Bindings van en function.json (httpTrigger, queueTrigger, timerTrigger)\n"
+            "- Comando local: func start (no uvicorn)\n"
+            "- Settings locales: local.settings.json (nunca .env)\n"
+            "- Para nueva funcion: crear carpeta + __init__.py + function.json\n"
+        )
+
+    context_msg = (
+        intro +
+        "\n\n".join(contexts) +
+        azure_functions_note +
+        "\n\n**INSTRUCCION:** Analiza todos los repos y propone un blueprint "
+        "que cubra los cambios necesarios en todos ellos (propose_blueprint)."
+    )
+
+    logger.info("node_read_project mode=%s repos=%d", mode, len(contexts))
     return {
-        "existing_structure": structure,
+        "existing_structure": "\n\n".join(contexts),
         "messages": state["messages"] + [{"role": "user", "content": [{"type": "text", "text": context_msg}]}],
     }
 
@@ -84,8 +140,28 @@ async def node_execute_tools(state: BuilderState) -> dict:
         generation_done = state.get("generation_complete", False)
 
         mode = state.get("mode", "new")
-        is_existing = mode == "existing"
-        existing_path = Path(state.get("project_path", "")).expanduser() if is_existing else None
+        is_existing = mode in ("existing", "multi")
+
+        # Resolve active repo path for existing/multi mode
+        active_repo = state.get("active_repo", "")
+        registry = state.get("repos_registry", {})
+        if mode == "multi" and active_repo and active_repo in registry:
+            existing_path = Path(registry[active_repo]["path"]).expanduser()
+        elif mode == "existing":
+            existing_path = Path(state.get("project_path", "")).expanduser()
+        else:
+            existing_path = None
+
+        if name == "set_active_repo":
+            repo_name = inputs.get("repo_name", "")
+            if repo_name in registry:
+                active_repo = repo_name
+                result = f"Repo activo cambiado a: {repo_name} ({registry[repo_name]['path']})"
+                logger.info("set_active_repo repo=%s", repo_name)
+            else:
+                result = f"Repo '{repo_name}' no encontrado. Disponibles: {list(registry.keys())}"
+            tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": result})
+            continue
 
         if name == "propose_blueprint":
             blueprint = extract_blueprint(inputs)
@@ -99,7 +175,7 @@ async def node_execute_tools(state: BuilderState) -> dict:
         elif is_existing and existing_path:
             result = await execute_tool_at(name, inputs, existing_path)
             if name == "write_file":
-                files_generated.append(inputs.get("path", ""))
+                files_generated.append(f"{active_repo or 'repo'}:{inputs.get('path', '')}")
         else:
             result = await execute_tool(name, inputs, state["request"].project_name or "proyecto")
             if name == "write_file":

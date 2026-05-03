@@ -188,6 +188,91 @@ async def run_builder(
     )
 
 
+async def run_builder_multi(
+    user_story: str,
+    repos: list,
+    refinement_context,
+    client,
+    thread_id: str,
+) -> GraphRunResult:
+    """Modo multi-repo — modifica múltiples repositorios para una historia de usuario."""
+    from src.models.request import BuildRequest
+
+    # Build registry: {name → {path, branch_name, repo_type}}
+    registry = {
+        r.name: {
+            "path": str(Path(r.project_path).expanduser()),
+            "branch_name": r.branch_name,
+            "repo_type": r.repo_type,
+        }
+        for r in repos
+    }
+
+    first_repo = repos[0]
+    request = BuildRequest(
+        user_story=user_story,
+        refinement_context=refinement_context,
+    )
+
+    graph = build_graph(client)
+    config = _make_config(thread_id)
+
+    initial_state: BuilderState = {
+        "messages": [{"role": "user", "content": build_initial_content(user_story, refinement_context)}],
+        "request": request,
+        "mode": "multi",
+        "project_path": "",
+        "branch_name": first_repo.branch_name,
+        "existing_structure": "",
+        "repos_registry": registry,
+        "active_repo": first_repo.name,
+        "project_name": "",
+        "framework": "",
+        "database": "",
+        "auth": "",
+        "extra_context": "",
+        "blueprint": None,
+        "blueprint_approved": False,
+        "files_generated": [],
+        "files_modified": [],
+        "generation_round": 0,
+        "generation_complete": False,
+        "_stop_reason": "",
+        "human_decision": None,
+    }
+
+    final = await graph.ainvoke(initial_state, config)
+
+    snapshot = await graph.aget_state(config)
+    interrupted = bool(snapshot and snapshot.next)
+    interrupt_payload = None
+    if interrupted and snapshot.tasks:
+        for task in snapshot.tasks:
+            if hasattr(task, "interrupts") and task.interrupts:
+                interrupt_payload = task.interrupts[0].value
+                break
+
+    if interrupted:
+        return GraphRunResult(
+            thread_id=thread_id, interrupted=True,
+            interrupt_payload=interrupt_payload, response=None,
+        )
+
+    files = final.get("files_generated", []) if isinstance(final, dict) else []
+    repo_names = list(registry.keys())
+
+    return GraphRunResult(
+        thread_id=thread_id, interrupted=False, interrupt_payload=None,
+        response=BuildResponse(
+            project_path=", ".join(repo_names),
+            files_generated=files,
+            framework="multi-repo",
+            database="",
+            message=f"Modificados {len(repo_names)} repos: {', '.join(repo_names)}. {len(files)} archivos.",
+        ),
+    )
+
+
 async def run_builder_existing(
     request: BuildRequest,
     project_path: str,

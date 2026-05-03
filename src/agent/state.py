@@ -14,13 +14,20 @@ class BuilderState(TypedDict):
 
     # Mode — determina el flujo del grafo
     # "new"      → crea proyecto desde cero en projects_workspace
-    # "existing" → modifica proyecto existente en project_path
+    # "existing" → modifica un solo proyecto existente
+    # "multi"    → modifica múltiples repos (el más complejo)
     mode: str
 
-    # Existing project mode
-    project_path: str          # ruta absoluta al repo existente
-    branch_name: str           # rama a crear (feature/HU-XXX)
-    existing_structure: str    # snapshot de la estructura del proyecto leida
+    # Single existing project mode
+    project_path: str
+    branch_name: str
+    existing_structure: str
+
+    # Multi-repo mode
+    # repos_registry: {name → {path, branch_name, repo_type}}
+    # Serializable como dict[str, dict] para MemorySaver
+    repos_registry: dict
+    active_repo: str            # nombre del repo activo para las tools
 
     # New project mode (discovery)
     project_name: str
@@ -35,7 +42,7 @@ class BuilderState(TypedDict):
 
     # Generation tracking
     files_generated: list[str]
-    files_modified: list[str]   # archivos modificados en proyecto existente
+    files_modified: list[str]
     generation_round: int
     generation_complete: bool
 

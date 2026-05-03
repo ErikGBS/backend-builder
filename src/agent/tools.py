@@ -164,6 +164,21 @@ TOOLS = [
         },
     },
     {
+        "name": "set_active_repo",
+        "description": (
+            "Cambia el repo activo para las operaciones de archivo y git. "
+            "Usa esto cuando necesites cambiar de un repo a otro en modo multi-repo. "
+            "El nombre debe coincidir con uno de los repos del registry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_name": {"type": "string", "description": "Nombre del repo (ej: maestro-bff-api)"},
+            },
+            "required": ["repo_name"],
+        },
+    },
+    {
         "name": "git_push",
         "description": "Hace commit de todos los cambios y pushea la rama a Azure DevOps. Llama esto al finalizar.",
         "input_schema": {

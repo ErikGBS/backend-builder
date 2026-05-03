@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
-from src.agent.graph import resume_builder, run_builder, run_builder_existing
+from src.agent.graph import resume_builder, run_builder, run_builder_existing, run_builder_multi
 from src.core.config import settings
 from src.models.refinement import RefinementContext
-from src.models.request import BuildRequest, BuildResponse
+from src.models.request import BuildRequest, BuildResponse, MultiRepoModifyRequest
 
 router = APIRouter(prefix="/builder", tags=["builder"])
 
@@ -130,6 +130,64 @@ async def modify_existing_project(
         branch_name=body.branch_name,
         client=_client,
         thread_id=body.thread_id,
+    )
+
+    if result.interrupted:
+        return BuildV2Response(
+            thread_id=result.thread_id,
+            interrupted=True,
+            blueprint_request=result.interrupt_payload,
+        )
+
+    return BuildV2Response(
+        thread_id=result.thread_id,
+        interrupted=False,
+        result=result.response,
+    )
+
+
+@router.post("/modify-multi")
+async def modify_multiple_repos(
+    body: MultiRepoModifyRequest,
+    _: str = Depends(_verify_api_key),
+) -> BuildV2Response:
+    """
+    Modifica múltiples repositorios para una misma historia de usuario.
+
+    Ejemplo del caso Progresol — 2 Azure Functions + 1 BFF:
+    {
+      "user_story": "Agregar notificacion de cotizacion aprobada",
+      "repos": [
+        {"name": "nanaykuna-bff-integration",
+         "project_path": "~/progresol/nanaykuna-bff-integration",
+         "branch_name": "feature/HU-89-notificacion",
+         "repo_type": "python"},
+        {"name": "nanaykuna-cotizacion-functions",
+         "project_path": "~/progresol/nanaykuna-cotizacion-functions",
+         "branch_name": "feature/HU-89-notificacion",
+         "repo_type": "functions-dotnet"},
+        {"name": "nanaykuna-notificacion-functions",
+         "project_path": "~/progresol/nanaykuna-notificacion-functions",
+         "branch_name": "feature/HU-89-notificacion",
+         "repo_type": "functions-dotnet"}
+      ],
+      "refinement_context": { ...output del agente de refinamiento... }
+    }
+
+    El agente:
+      1. Lee la estructura de TODOS los repos
+      2. Propone un blueprint unificado que cubre todos los cambios
+      3. Pausa para aprobacion del developer
+      4. Ejecuta los cambios en cada repo usando set_active_repo para navegar
+      5. Pushea cada rama al remote
+    """
+    thread_id = str(__import__("uuid").uuid4())
+    result = await run_builder_multi(
+        user_story=body.user_story,
+        repos=body.repos,
+        refinement_context=body.refinement_context,
+        client=_client,
+        thread_id=thread_id,
     )
 
     if result.interrupted:
