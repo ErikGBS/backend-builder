@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,13 +10,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     claude_model: str = "claude-sonnet-4-6"
     api_key: str
-
-    # Workspace where generated projects are created
     projects_workspace: str = "~/projects"
 
-    # LangSmith observability (optional)
     langsmith_tracing: bool = False
-    langsmith_api_key: str | None = None
+    langsmith_api_key: Optional[str] = None
     langsmith_project: str = "backend-builder"
 
 

@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import os
 import uuid
+from typing import Optional
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException, Security
@@ -38,8 +41,8 @@ class BuildV2Request(BuildRequest):
 class BuildV2Response(BaseModel):
     thread_id: str
     interrupted: bool = False
-    blueprint_request: dict | None = None
-    result: BuildResponse | None = None
+    blueprint_request: Optional[dict] = None
+    result: Optional[BuildResponse] = None
 
 
 class ResumeRequest(BaseModel):
