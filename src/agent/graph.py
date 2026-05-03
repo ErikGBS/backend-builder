@@ -69,24 +69,26 @@ def build_graph(client):
     graph.add_node("prepare_decision",    node_prepare_decision)
     graph.add_node("setup",               node_setup)
 
-    # Entry point: Modo B va a read_project primero, Modo A va directo a call_model
+    # Entry point: modos existing y multi leen repos primero, nuevo va directo a call_model
     graph.set_conditional_entry_point(
-        lambda s: "read_project" if s.get("mode") == "existing" else "call_model"
+        lambda s: "read_project" if s.get("mode") in ("existing", "multi") else "call_model"
     )
     graph.add_edge("read_project", "call_model")
 
     graph.add_conditional_edges(
         "call_model", _after_model,
         {
-            "execute_tools":      "execute_tools",
-            "blueprint_approval": "blueprint_approval",
-            "setup":              "setup",
-            "call_model":         "call_model",
+            "execute_tools": "execute_tools",
+            "call_model":    "call_model",
         },
     )
     graph.add_conditional_edges(
         "execute_tools", _after_execute_tools,
-        {"blueprint_approval": "blueprint_approval", "call_model": "call_model"},
+        {
+            "blueprint_approval": "blueprint_approval",
+            "call_model":         "call_model",
+            "setup":              "setup",    # bug fix: faltaba este mapping
+        },
     )
     graph.add_edge("blueprint_approval", "prepare_decision")
     graph.add_edge("prepare_decision",   "call_model")

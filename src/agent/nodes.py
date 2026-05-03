@@ -126,8 +126,22 @@ async def node_execute_tools(state: BuilderState) -> dict:
     """Execute filesystem tools or propose_blueprint from the last assistant message."""
     last_content = state["messages"][-1]["content"]
     tool_results = []
+
+    # Initialize all mutable state OUTSIDE the loop (bug fix: were inside before)
     files_generated = list(state.get("files_generated", []))
     blueprint = state.get("blueprint")
+    generation_done = state.get("generation_complete", False)
+    mode = state.get("mode", "new")
+    is_existing = mode in ("existing", "multi")
+    active_repo = state.get("active_repo", "")   # tracked across all tool calls in this turn
+    registry = state.get("repos_registry", {})
+
+    def _resolve_path() -> Path | None:
+        if mode == "multi" and active_repo and active_repo in registry:
+            return Path(registry[active_repo]["path"]).expanduser()
+        if mode == "existing":
+            return Path(state.get("project_path", "")).expanduser()
+        return None
 
     for block in last_content:
         if block["type"] != "tool_use":
@@ -135,47 +149,35 @@ async def node_execute_tools(state: BuilderState) -> dict:
 
         name = block["name"]
         inputs = block["input"]
-        logger.info("node_execute_tools tool=%s", name)
-
-        generation_done = state.get("generation_complete", False)
-
-        mode = state.get("mode", "new")
-        is_existing = mode in ("existing", "multi")
-
-        # Resolve active repo path for existing/multi mode
-        active_repo = state.get("active_repo", "")
-        registry = state.get("repos_registry", {})
-        if mode == "multi" and active_repo and active_repo in registry:
-            existing_path = Path(registry[active_repo]["path"]).expanduser()
-        elif mode == "existing":
-            existing_path = Path(state.get("project_path", "")).expanduser()
-        else:
-            existing_path = None
+        logger.info("node_execute_tools tool=%s active_repo=%s", name, active_repo or "n/a")
 
         if name == "set_active_repo":
             repo_name = inputs.get("repo_name", "")
             if repo_name in registry:
-                active_repo = repo_name
-                result = f"Repo activo cambiado a: {repo_name} ({registry[repo_name]['path']})"
-                logger.info("set_active_repo repo=%s", repo_name)
+                active_repo = repo_name   # persisted in return dict below
+                result = f"Repo activo: {repo_name} ({registry[repo_name]['path']})"
+                logger.info("set_active_repo → %s", repo_name)
             else:
                 result = f"Repo '{repo_name}' no encontrado. Disponibles: {list(registry.keys())}"
             tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": result})
-            continue
+            continue  # don't fall through to other handlers
+
+        existing_path = _resolve_path()
 
         if name == "propose_blueprint":
             blueprint = extract_blueprint(inputs)
             result = (
-                f"Blueprint registrado: {blueprint.project_name if blueprint else 'inválido'}. "
-                "Esperando aprobación del developer."
+                f"Blueprint registrado: {blueprint.project_name if blueprint else 'invalido'}. "
+                "Esperando aprobacion del developer."
             )
         elif name == "generation_complete":
             generation_done = True
-            result = f"Generación completada. Archivos: {len(files_generated)}. Resumen: {inputs.get('summary', '')}"
+            result = f"Generacion completada. Archivos: {len(files_generated)}. Resumen: {inputs.get('summary', '')}"
         elif is_existing and existing_path:
             result = await execute_tool_at(name, inputs, existing_path)
             if name == "write_file":
-                files_generated.append(f"{active_repo or 'repo'}:{inputs.get('path', '')}")
+                prefix = f"{active_repo}:" if active_repo else ""
+                files_generated.append(f"{prefix}{inputs.get('path', '')}")
         else:
             result = await execute_tool(name, inputs, state["request"].project_name or "proyecto")
             if name == "write_file":
@@ -188,6 +190,7 @@ async def node_execute_tools(state: BuilderState) -> dict:
         "blueprint": blueprint,
         "files_generated": files_generated,
         "generation_complete": generation_done,
+        "active_repo": active_repo,   # bug fix: persist active_repo changes across turns
     }
 
 
@@ -252,19 +255,40 @@ def node_prepare_decision(state: BuilderState) -> dict:
 
 
 async def node_setup(state: BuilderState) -> dict:
-    """Final setup: git init and open VS Code."""
+    """Final setup. Behavior depends on mode:
+    - new:      git init + commit + open VS Code
+    - existing: only open VS Code (git operations done inline via git_push tool)
+    - multi:    open VS Code for each repo
+    """
     from pathlib import Path
     from src.core.config import settings
 
-    project_name = state["request"].project_name or "proyecto"
-    full_path = str(Path(settings.projects_workspace).expanduser() / project_name)
+    mode = state.get("mode", "new")
+    files_count = len(state.get("files_generated", []))
 
-    await execute_tool("run_command", {"command": "git init"}, project_name)
-    await execute_tool("run_command", {"command": "git add ."}, project_name)
-    await execute_tool("run_command", {
-        "command": 'git commit -m "feat: initial project generated by backend-builder"'
-    }, project_name)
-    await execute_tool("open_vscode", {"path": full_path}, project_name)
+    if mode == "new":
+        project_name = state["request"].project_name or "proyecto"
+        full_path = str(Path(settings.projects_workspace).expanduser() / project_name)
+        await execute_tool("run_command", {"command": "git init"}, project_name)
+        await execute_tool("run_command", {"command": "git add ."}, project_name)
+        await execute_tool("run_command", {
+            "command": 'git commit -m "feat: initial project generated by backend-builder"'
+        }, project_name)
+        await execute_tool("open_vscode", {"path": full_path}, project_name)
+        logger.info("node_setup mode=new project=%s files=%d", project_name, files_count)
 
-    logger.info("node_setup done project=%s files=%d path=%s", project_name, len(state.get("files_generated", [])), full_path)
+    elif mode == "existing":
+        # git operations already done via git_push tool — just open VS Code
+        full_path = str(Path(state.get("project_path", "")).expanduser())
+        await execute_tool_at("open_vscode", {"path": full_path}, Path(full_path))
+        logger.info("node_setup mode=existing path=%s files=%d", full_path, files_count)
+
+    elif mode == "multi":
+        # Open VS Code for each modified repo
+        registry = state.get("repos_registry", {})
+        for repo_name, repo_info in registry.items():
+            repo_path = Path(repo_info["path"]).expanduser()
+            await execute_tool_at("open_vscode", {"path": str(repo_path)}, repo_path)
+        logger.info("node_setup mode=multi repos=%d files=%d", len(registry), files_count)
+
     return {}
