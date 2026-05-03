@@ -17,6 +17,36 @@ _ALLOWED_COMMANDS = {
 
 TOOLS = [
     {
+        "name": "propose_blueprint",
+        "description": (
+            "Propone el blueprint del proyecto al desarrollador para su aprobación. "
+            "Llama esta tool ANTES de generar cualquier archivo. "
+            "El flujo se pausará hasta que el developer apruebe o dé feedback."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "blueprint": {
+                    "type": "object",
+                    "description": "Blueprint completo con project_name, framework, database, auth, entities, endpoints, folder_structure, tradeoffs",
+                    "properties": {
+                        "project_name": {"type": "string"},
+                        "framework": {"type": "string"},
+                        "database": {"type": "string"},
+                        "auth": {"type": "string"},
+                        "entities": {"type": "array"},
+                        "endpoints": {"type": "array"},
+                        "folder_structure": {"type": "array"},
+                        "tradeoffs": {"type": "string"},
+                        "open_questions": {"type": "array"},
+                    },
+                    "required": ["project_name", "framework", "database", "auth", "entities", "endpoints", "folder_structure", "tradeoffs"],
+                },
+            },
+            "required": ["blueprint"],
+        },
+    },
+    {
         "name": "create_directory",
         "description": "Crea una carpeta en el proyecto. Usa rutas relativas desde la raíz del proyecto.",
         "input_schema": {
