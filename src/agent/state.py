@@ -49,3 +49,4 @@ class BuilderState(TypedDict):
     # Flow control
     _stop_reason: str
     human_decision: str | None
+    nudge_count: int            # cuántas veces empujamos al modelo a usar tools

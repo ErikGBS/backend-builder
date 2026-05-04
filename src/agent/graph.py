@@ -11,6 +11,7 @@ from src.agent.nodes import (
     node_blueprint_approval,
     node_call_model,
     node_execute_tools,
+    node_nudge_to_tools,
     node_prepare_decision,
     node_read_project,
     node_setup,
@@ -26,12 +27,17 @@ _graph_cache: dict = {}
 
 # ── Edge conditions ──────────────────────────────────────────────
 
+_MAX_NUDGES = 2
+
+
 def _after_model(state: BuilderState) -> str:
     stop_reason = state.get("_stop_reason", "")
     if stop_reason == "tool_use":
         return "execute_tools"
-    # end_turn — Claude is done with current turn, check state
-    return "call_model"  # stay in conversation loop (graph exits via execute_tools routing)
+    if state.get("nudge_count", 0) < _MAX_NUDGES:
+        return "nudge"
+    logger.warning("call_model: modelo no usó tools después de %d nudges, terminando", _MAX_NUDGES)
+    return "end"
 
 
 def _after_execute_tools(state: BuilderState) -> str:
@@ -65,6 +71,7 @@ def build_graph(client):
     graph.add_node("read_project",        node_read_project)   # Modo B — lee proyecto existente
     graph.add_node("call_model",          partial(node_call_model, client=client))
     graph.add_node("execute_tools",       node_execute_tools)
+    graph.add_node("nudge",               node_nudge_to_tools)
     graph.add_node("blueprint_approval",  node_blueprint_approval)
     graph.add_node("prepare_decision",    node_prepare_decision)
     graph.add_node("setup",               node_setup)
@@ -79,9 +86,11 @@ def build_graph(client):
         "call_model", _after_model,
         {
             "execute_tools": "execute_tools",
-            "call_model":    "call_model",
+            "nudge":         "nudge",
+            "end":           END,
         },
     )
+    graph.add_edge("nudge", "call_model")
     graph.add_conditional_edges(
         "execute_tools", _after_execute_tools,
         {
@@ -149,6 +158,7 @@ async def run_builder(
         "generation_complete": False,
         "_stop_reason": "",
         "human_decision": None,
+        "nudge_count": 0,
     }
 
     final = await graph.ainvoke(initial_state, config)
@@ -241,6 +251,7 @@ async def run_builder_multi(
         "generation_complete": False,
         "_stop_reason": "",
         "human_decision": None,
+        "nudge_count": 0,
     }
 
     final = await graph.ainvoke(initial_state, config)
@@ -308,6 +319,7 @@ async def run_builder_existing(
         "generation_complete": False,
         "_stop_reason": "",
         "human_decision": None,
+        "nudge_count": 0,
     }
 
     final = await graph.ainvoke(initial_state, config)

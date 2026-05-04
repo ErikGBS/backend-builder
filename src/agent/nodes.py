@@ -185,6 +185,9 @@ async def node_execute_tools(state: BuilderState) -> dict:
 
         tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": result})
 
+    if not tool_results:
+        tool_results = [{"type": "text", "text": "(sin tool calls — continúa)"}]
+
     return {
         "messages": state["messages"] + [{"role": "user", "content": tool_results}],
         "blueprint": blueprint,
@@ -252,6 +255,23 @@ def node_prepare_decision(state: BuilderState) -> dict:
             "blueprint_approved": False,
             "messages": state["messages"] + [{"role": "user", "content": [{"type": "text", "text": msg}]}],
         }
+
+
+def node_nudge_to_tools(state: BuilderState) -> dict:
+    """Empuja al modelo a usar herramientas cuando responde solo con texto.
+    Evita el error 'assistant message prefill' al garantizar que la conversación
+    termine con un mensaje de user antes del próximo call_model."""
+    nudge_msg = (
+        "Recibí tu análisis. Ahora **debes** usar la herramienta `propose_blueprint` "
+        "(o las tools de generación si el blueprint ya fue aprobado) para continuar. "
+        "No respondas solo con texto — invoca una tool."
+    )
+    return {
+        "messages": state["messages"] + [
+            {"role": "user", "content": [{"type": "text", "text": nudge_msg}]}
+        ],
+        "nudge_count": state.get("nudge_count", 0) + 1,
+    }
 
 
 async def node_setup(state: BuilderState) -> dict:
